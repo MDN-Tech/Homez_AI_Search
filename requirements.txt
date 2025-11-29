@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 asyncpg
 psycopg[binary]
+pgvector
 langchain-core
 python-dotenv
 sentence-transformers

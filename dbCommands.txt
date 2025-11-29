@@ -29,9 +29,7 @@ CREATE TABLE product_embeddings (
     PRIMARY KEY(product_id)
 );
 
-CREATE INDEX product_embedding_idx
-ON product_embeddings
-USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX ON product_embeddings USING ivfflat (embedding vector_cosine_ops);
 
 
 -- Create services table
@@ -58,6 +56,4 @@ CREATE TABLE service_embeddings (
     PRIMARY KEY(service_id)
 );
 
-CREATE INDEX service_embedding_idx
-ON service_embeddings
-USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX ON service_embeddings USING ivfflat (embedding vector_cosine_ops);

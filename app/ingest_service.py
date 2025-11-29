@@ -10,8 +10,8 @@ async def ingest_service(service: Service):
     """
     Ingest a service at `/service` endpoint:
     - Store the service JSON as-is
-    - Generate embedding including name, description, basePrice, categoryName, tags, packages, attributes
-    - Store embedding
+    - Generate a single unified embedding from all service data
+    - Store embedding using pgvector
     """
     
     # Import pool inside the function to ensure it's initialized
@@ -49,7 +49,7 @@ async def ingest_service(service: Service):
         json.dumps(service.metadata or {})
         )
 
-    # Build embedding text
+    # Build a unified text containing all relevant service information
     packages_text = ""
     for p in service.packages:
         p_parts = [f"Package: {p.name}", f"Price: {p.price}", f"Description: {p.description}"]
@@ -61,7 +61,7 @@ async def ingest_service(service: Service):
             p_parts.append(" | ".join(attr_text))
         packages_text += " | ".join(p_parts) + "\n"
 
-    embedding_text = f"""
+    full_text = f"""
 Name: {service.name}
 Description: {service.description}
 Base Price: {service.basePrice}
@@ -69,19 +69,17 @@ Category: {service.categoryName}
 Tags: {', '.join(service.tags or [])}
 Packages:
 {packages_text}
+Metadata: {json.dumps(service.metadata or {})}
 """
 
-    # Generate embedding
-    embedding = await embed_text(embedding_text)
-
-    # Store embedding
-    # Convert list to PostgreSQL vector format
-    embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+    # Generate a single embedding for the entire service
+    embedding = await embed_text(full_text)
+    
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO service_embeddings (service_id, embedding)
-            VALUES ($1,$2::vector)
+            VALUES ($1,$2)
             ON CONFLICT (service_id) DO UPDATE SET embedding=EXCLUDED.embedding
-        """, service_id, embedding_str)
+        """, service_id, embedding)
 
     return {"status": "embedded", "service_id": service_id}

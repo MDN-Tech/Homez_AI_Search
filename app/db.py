@@ -3,6 +3,7 @@ import os
 from dotenv import load_dotenv
 from typing import Optional
 import logging
+from pgvector.asyncpg import register_vector
 
 # Load environment variables
 load_dotenv()
@@ -44,7 +45,8 @@ async def init_db_pool():
             pool = await asyncpg.create_pool(
                 dsn=DATABASE_URL,
                 min_size=1,
-                max_size=10
+                max_size=10,
+                init=register_vector  # Register pgvector extension
             )
             logger.info("✅ Database pool initialized")
         except Exception as e:

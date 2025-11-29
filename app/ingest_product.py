@@ -10,8 +10,8 @@ async def ingest_product(product: Product):
     """
     Ingest a product at `/product` endpoint:
     - Store the product JSON as-is
-    - Generate embedding including name, description, basePrice, categoryName, brand, tags, variants, attributes
-    - Store embedding
+    - Generate a single unified embedding from all product data
+    - Store embedding using pgvector
     """
     
     # Import pool inside the function to ensure it's initialized
@@ -53,7 +53,7 @@ async def ingest_product(product: Product):
         json.dumps(product.metadata or {})
         )
 
-    # Build embedding text
+    # Build a unified text containing all relevant product information
     variants_text = ""
     for v in product.variants:
         v_parts = [f"SKU: {v.sku}", f"Price: {v.price}", f"Stock: {v.stock}"]
@@ -65,7 +65,7 @@ async def ingest_product(product: Product):
             v_parts.append(" | ".join(attr_text))
         variants_text += " | ".join(v_parts) + "\n"
 
-    embedding_text = f"""
+    full_text = f"""
 Name: {product.name}
 Description: {product.description}
 Base Price: {product.basePrice}
@@ -74,19 +74,17 @@ Brand: {product.brand}
 Tags: {', '.join(product.tags or [])}
 Variants:
 {variants_text}
+Metadata: {json.dumps(product.metadata or {})}
 """
 
-    # Generate embedding
-    embedding = await embed_text(embedding_text)
-
-    # Store embedding
-    # Convert list to PostgreSQL vector format
-    embedding_str = "[" + ",".join(map(str, embedding)) + "]"
+    # Generate a single embedding for the entire product
+    embedding = await embed_text(full_text)
+    
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO product_embeddings (product_id, embedding)
-            VALUES ($1,$2::vector)
+            VALUES ($1,$2)
             ON CONFLICT (product_id) DO UPDATE SET embedding=EXCLUDED.embedding
-        """, product_id, embedding_str)
+        """, product_id, embedding)
 
     return {"status": "embedded", "product_id": product_id}
