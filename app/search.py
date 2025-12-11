@@ -23,7 +23,7 @@ router = APIRouter()
 
 @router.get("/", response_model=SearchResponse)
 async def search(query: str = Query(..., description="Search query"),
-                 limit: int = Query(2, description="Number of results per type")):
+                 limit: int = Query(20, description="Number of results per type")):
     """
     Search both products and services using semantic embeddings + cosine similarity
     Returns top `limit` products and top `limit` services
