@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -27,20 +26,93 @@ from app.embedding_utils import embed_text
 import asyncpg
 from pgvector.asyncpg import register_vector
 
-# RabbitMQ Configuration
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USERNAME = os.getenv("RABBITMQ_USERNAME", "guest")
 RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 RABBITMQ_VIRTUAL_HOST = os.getenv("RABBITMQ_VIRTUAL_HOST", "/")
+RABBITMQ_PROTOCOL = os.getenv("RABBITMQ_PROTOCOL", "amqp")
 
-# Queue names
-PRODUCT_QUEUE = os.getenv("PRODUCT_QUEUE", "product_queue")
-SERVICE_QUEUE = os.getenv("SERVICE_QUEUE", "service_queue")
+PRODUCT_QUEUE = os.getenv("PRODUCT_QUEUE_NAME", "product_queue")
+SERVICE_QUEUE = os.getenv("SERVICE_QUEUE_NAME", "service_queue")
 
 # Global database pool and shutdown flag
 db_pool = None
 shutdown_event = asyncio.Event()
+
+
+def convert_to_float(value):
+    """Convert string to float, return 0 if conversion fails"""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def convert_to_int(value):
+    """Convert string to int, return 0 if conversion fails"""
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return 0
+
+
+def get_attribute_value(attr):
+    """Get attribute value and convert to appropriate type"""
+    if attr.get('stringValue') is not None:
+        return attr.get('stringValue')
+    elif attr.get('numberValue') is not None:
+        # Convert string number values to actual numbers
+        num_val = attr.get('numberValue')
+        if isinstance(num_val, str):
+            try:
+                # Try to convert to int first, then float
+                if '.' in num_val:
+                    return float(num_val)
+                else:
+                    return int(num_val)
+            except (ValueError, TypeError):
+                return num_val  # Return as string if conversion fails
+        return num_val
+    elif attr.get('booleanValue') is not None:
+        return attr.get('booleanValue')
+    elif attr.get('dateValue') is not None:
+        return attr.get('dateValue')
+    else:
+        return ""
+
+
+def fix_attribute_data_type(attr):
+    """Ensure attribute has dataType field set correctly"""
+    # Make a copy to avoid modifying the original
+    fixed_attr = attr.copy()
+    
+    # Set templateId if missing
+    if 'templateId' not in fixed_attr:
+        fixed_attr['templateId'] = None
+    
+    # Set dataType if missing
+    if 'dataType' not in fixed_attr:
+        if 'stringValue' in fixed_attr and fixed_attr['stringValue'] is not None:
+            fixed_attr['dataType'] = 'string'
+        elif 'numberValue' in fixed_attr and fixed_attr['numberValue'] is not None:
+            fixed_attr['dataType'] = 'number'
+        elif 'booleanValue' in fixed_attr and fixed_attr['booleanValue'] is not None:
+            fixed_attr['dataType'] = 'boolean'
+        elif 'dateValue' in fixed_attr and fixed_attr['dateValue'] is not None:
+            fixed_attr['dataType'] = 'date'
+        else:
+            fixed_attr['dataType'] = 'string'  # default fallback
+    
+    return fixed_attr
 
 async def get_db_pool():
     """Get or create database pool"""
@@ -64,7 +136,16 @@ async def process_product_data(product_data: Dict[Any, Any]):
     Process product data: store in DB and generate embeddings.
     This reuses your existing logic from bulk_import.py.
     """
-    product_id = product_data['id']
+    # Check if product_data is valid
+    if not isinstance(product_data, dict):
+        logger.error(f"Invalid product data format: {type(product_data)}")
+        return False
+        
+    product_id = product_data.get('id')
+    if not product_id:
+        logger.error(f"Product message missing 'id' field. Data: {product_data}")
+        return False
+        
     logger.info(f"Processing product: {product_id}")
     
     if not product_data.get('name'):
@@ -74,6 +155,16 @@ async def process_product_data(product_data: Dict[Any, Any]):
     try:
         # Get database pool
         pool = await get_db_pool()
+        
+        # Fix attributes before storing
+        fixed_variants = []
+        for variant in product_data.get('variants', []):
+            fixed_variant = variant.copy()
+            if 'attributes' in fixed_variant and isinstance(fixed_variant['attributes'], list):
+                fixed_variant['attributes'] = [fix_attribute_data_type(attr) for attr in fixed_variant['attributes']]
+            fixed_variants.append(fixed_variant)
+        
+        fixed_attributes = [fix_attribute_data_type(attr) for attr in product_data.get('attributes', [])]
         
         # Store product JSON in DB
         async with pool.acquire() as conn:
@@ -95,21 +186,21 @@ async def process_product_data(product_data: Dict[Any, Any]):
             product_data.get('name', ''),
             product_data.get('barcode'),
             product_data.get('description', ''),
-            product_data.get('basePrice', 0),
+            convert_to_float(product_data.get('basePrice', 0)),
             product_data.get('categoryName', ''),
             product_data.get('brand'),
             json.dumps(product_data.get('tags', [])),
-            json.dumps(product_data.get('variants', [])),
-            json.dumps(product_data.get('attributes', []))
+            json.dumps(fixed_variants),
+            json.dumps(fixed_attributes)
             )
             logger.info(f"Product DB insert result: {result}")
 
         variants_text = ""
         for v in product_data.get('variants', []):
-            v_parts = [f"SKU: {v.get('sku', '')}", f"Price: {v.get('price', 0)}", f"Stock: {v.get('stock', 0)}"]
+            v_parts = [f"SKU: {v.get('sku', '')}", f"Price: {convert_to_float(v.get('price', 0))}", f"Stock: {convert_to_int(v.get('stock', 0))}"]
             attr_text = []
             for a in v.get('attributes', []):
-                val = a.get('stringValue') or a.get('numberValue') or a.get('booleanValue') or a.get('dateValue') or ""
+                val = get_attribute_value(a)
                 attr_text.append(f"{a.get('name', '')}: {val}")
             if attr_text:
                 v_parts.append(" | ".join(attr_text))
@@ -117,13 +208,13 @@ async def process_product_data(product_data: Dict[Any, Any]):
         
         product_attributes_text = ""
         for a in product_data.get('attributes', []):
-            val = a.get('stringValue') or a.get('numberValue') or a.get('booleanValue') or a.get('dateValue') or ""
+            val = get_attribute_value(a)
             product_attributes_text += f"{a.get('name', '')}: {val}\n"
 
         full_text = f"""
 Name: {product_data.get('name', '')}
 Description: {product_data.get('description', '')}
-Base Price: {product_data.get('basePrice', 0)}
+Base Price: {convert_to_float(product_data.get('basePrice', 0))}
 Category: {product_data.get('categoryName', '')}
 Brand: {product_data.get('brand', '')}
 Tags: {', '.join(product_data.get('tags', []))}
@@ -157,7 +248,16 @@ async def process_service_data(service_data: Dict[Any, Any]):
     Process service data: store in DB and generate embeddings.
     This reuses your existing logic from bulk_import.py.
     """
-    service_id = service_data['id']
+    # Check if service_data is valid
+    if not isinstance(service_data, dict):
+        logger.error(f"Invalid service data format: {type(service_data)}")
+        return False
+        
+    service_id = service_data.get('id')
+    if not service_id:
+        logger.error(f"Service message missing 'id' field. Data: {service_data}")
+        return False
+        
     logger.info(f"Processing service: {service_id}")
     
     if not service_data.get('name'):
@@ -167,6 +267,16 @@ async def process_service_data(service_data: Dict[Any, Any]):
     try:
         # Get database pool
         pool = await get_db_pool()
+        
+        # Fix attributes before storing
+        fixed_packages = []
+        for package in service_data.get('packages', []):
+            fixed_package = package.copy()
+            if 'attributes' in fixed_package and isinstance(fixed_package['attributes'], list):
+                fixed_package['attributes'] = [fix_attribute_data_type(attr) for attr in fixed_package['attributes']]
+            fixed_packages.append(fixed_package)
+        
+        fixed_attributes = [fix_attribute_data_type(attr) for attr in service_data.get('attributes', [])]
         
         # Store service JSON in DB
         async with pool.acquire() as conn:
@@ -185,20 +295,20 @@ async def process_service_data(service_data: Dict[Any, Any]):
             service_id,
             service_data.get('name', ''),
             service_data.get('description', ''),
-            service_data.get('basePrice', 0),
+            convert_to_float(service_data.get('basePrice', 0)),
             service_data.get('categoryName', ''),
             json.dumps(service_data.get('tags', [])),
-            json.dumps(service_data.get('packages', [])),
-            json.dumps(service_data.get('attributes', []))
+            json.dumps(fixed_packages),
+            json.dumps(fixed_attributes)
             )
             logger.info(f"Service DB insert result: {result}")
 
         packages_text = ""
         for p in service_data.get('packages', []):
-            p_parts = [f"Package: {p.get('name', '')}", f"Price: {p.get('price', 0)}", f"Description: {p.get('description', '')}"]
+            p_parts = [f"Package: {p.get('name', '')}", f"Price: {convert_to_float(p.get('price', 0))}", f"Description: {p.get('description', '')}"]
             attr_text = []
             for a in p.get('attributes', []):
-                val = a.get('stringValue') or a.get('numberValue') or a.get('booleanValue') or a.get('dateValue') or ""
+                val = get_attribute_value(a)
                 attr_text.append(f"{a.get('name', '')}: {val}")
             if attr_text:
                 p_parts.append(" | ".join(attr_text))
@@ -206,13 +316,13 @@ async def process_service_data(service_data: Dict[Any, Any]):
         
         service_attributes_text = ""
         for a in service_data.get('attributes', []):
-            val = a.get('stringValue') or a.get('numberValue') or a.get('booleanValue') or a.get('dateValue') or ""
+            val = get_attribute_value(a)
             service_attributes_text += f"{a.get('name', '')}: {val}\n"
 
         full_text = f"""
 Name: {service_data.get('name', '')}
 Description: {service_data.get('description', '')}
-Base Price: {service_data.get('basePrice', 0)}
+Base Price: {convert_to_float(service_data.get('basePrice', 0))}
 Category: {service_data.get('categoryName', '')}
 Tags: {', '.join(service_data.get('tags', []))}
 Packages:
@@ -243,9 +353,14 @@ Service Attributes:
 async def process_product_message(message: aio_pika.IncomingMessage):
     """Process a product message from RabbitMQ"""
     try:
+        # Log the raw message body for debugging
+        raw_body = message.body.decode()
+        logger.info(f"📥 Raw product message received: {raw_body}")
+        
         # Parse the product data
-        product_data = json.loads(message.body.decode())
-        logger.info(f"📥 Received product message: {product_data.get('id', 'Unknown')}")
+        response = json.loads(raw_body)
+        product_data = response.get('data', {})
+        logger.info(f"📥 Parsed product message: {product_data.get('id', 'Unknown')}")
         
         # Process the product data
         success = await process_product_data(product_data)
@@ -258,6 +373,11 @@ async def process_product_message(message: aio_pika.IncomingMessage):
             # Reject and requeue the message so it can be retried
             await message.nack(requeue=True)
             logger.warning(f"❌ Rejected product message (will retry): {product_data.get('id')}")
+    except json.JSONDecodeError as e:
+        logger.error(f"💥 Invalid JSON in product message: {e}")
+        logger.info(f"Raw message body: {message.body.decode()}")
+        # Reject and don't requeue invalid JSON messages
+        await message.nack(requeue=False)
     except Exception as e:
         logger.error(f"💥 Error processing product message: {e}", exc_info=True)
         # Reject and requeue the message so it can be retried
@@ -266,9 +386,14 @@ async def process_product_message(message: aio_pika.IncomingMessage):
 async def process_service_message(message: aio_pika.IncomingMessage):
     """Process a service message from RabbitMQ"""
     try:
+        # Log the raw message body for debugging
+        raw_body = message.body.decode()
+        logger.info(f"📥 Raw service message received: {raw_body}")
+        
         # Parse the service data
-        service_data = json.loads(message.body.decode())
-        logger.info(f"📥 Received service message: {service_data.get('id', 'Unknown')}")
+        response = json.loads(raw_body)
+        service_data = response.get('data', {})
+        logger.info(f"📥 Parsed service message: {service_data.get('id', 'Unknown')}")
         
         # Process the service data
         success = await process_service_data(service_data)
@@ -281,6 +406,11 @@ async def process_service_message(message: aio_pika.IncomingMessage):
             # Reject and requeue the message so it can be retried
             await message.nack(requeue=True)
             logger.warning(f"❌ Rejected service message (will retry): {service_data.get('id')}")
+    except json.JSONDecodeError as e:
+        logger.error(f"💥 Invalid JSON in service message: {e}")
+        logger.info(f"Raw message body: {message.body.decode()}")
+        # Reject and don't requeue invalid JSON messages
+        await message.nack(requeue=False)
     except Exception as e:
         logger.error(f"💥 Error processing service message: {e}", exc_info=True)
         # Reject and requeue the message so it can be retried
@@ -296,13 +426,23 @@ async def consume_products():
     logger.info(f"🔌 Connecting to RabbitMQ at {RABBITMQ_HOST}:{RABBITMQ_PORT}")
     
     # Connect to RabbitMQ
-    connection = await aio_pika.connect_robust(
-        host=RABBITMQ_HOST,
-        port=RABBITMQ_PORT,
-        login=RABBITMQ_USERNAME,
-        password=RABBITMQ_PASSWORD,
-        virtualhost=RABBITMQ_VIRTUAL_HOST
-    )
+    if RABBITMQ_PROTOCOL == "amqps":
+        connection = await aio_pika.connect_robust(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            login=RABBITMQ_USERNAME,
+            password=RABBITMQ_PASSWORD,
+            virtualhost=RABBITMQ_VIRTUAL_HOST,
+            ssl=True
+        )
+    else:
+        connection = await aio_pika.connect_robust(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            login=RABBITMQ_USERNAME,
+            password=RABBITMQ_PASSWORD,
+            virtualhost=RABBITMQ_VIRTUAL_HOST
+        )
     
     channel = await connection.channel()
     
@@ -326,13 +466,23 @@ async def consume_services():
     logger.info(f"🔌 Connecting to RabbitMQ at {RABBITMQ_HOST}:{RABBITMQ_PORT}")
     
     # Connect to RabbitMQ
-    connection = await aio_pika.connect_robust(
-        host=RABBITMQ_HOST,
-        port=RABBITMQ_PORT,
-        login=RABBITMQ_USERNAME,
-        password=RABBITMQ_PASSWORD,
-        virtualhost=RABBITMQ_VIRTUAL_HOST
-    )
+    if RABBITMQ_PROTOCOL == "amqps":
+        connection = await aio_pika.connect_robust(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            login=RABBITMQ_USERNAME,
+            password=RABBITMQ_PASSWORD,
+            virtualhost=RABBITMQ_VIRTUAL_HOST,
+            ssl=True
+        )
+    else:
+        connection = await aio_pika.connect_robust(
+            host=RABBITMQ_HOST,
+            port=RABBITMQ_PORT,
+            login=RABBITMQ_USERNAME,
+            password=RABBITMQ_PASSWORD,
+            virtualhost=RABBITMQ_VIRTUAL_HOST
+        )
     
     channel = await connection.channel()
     
