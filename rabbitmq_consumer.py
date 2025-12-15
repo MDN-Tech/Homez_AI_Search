@@ -535,11 +535,15 @@ async def main():
         return
     
     # Create tasks for both consumers
-    logger.info("🔄 Starting consumer tasks...")
-    product_task = asyncio.create_task(consume_products())
-    service_task = asyncio.create_task(consume_services())
+    try:
+        logger.info("🔄 Starting consumer tasks...")
+        product_task = asyncio.create_task(consume_products())
+        service_task = asyncio.create_task(consume_services())
+        logger.info("✅ Both consumers started. Press Ctrl+C to stop.")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create consumer tasks: {e}", exc_info=True)
     
-    logger.info("✅ Both consumers started. Press Ctrl+C to stop.")
     
     try:
         # Wait for both tasks (they run indefinitely until shutdown)
