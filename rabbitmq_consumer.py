@@ -8,7 +8,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import sys
 from typing import Dict, Any
 import aio_pika
@@ -373,7 +372,7 @@ async def process_product_message(message: aio_pika.IncomingMessage):
         response = json.loads(raw_body)
         product_data = response.get('data', {})
         logger.info(f"📥 Parsed product message: {product_data.get('id', 'Unknown')}")
-        
+
         # Process the product data
         success = await process_product_data(product_data)
         
@@ -428,12 +427,6 @@ async def process_service_message(message: aio_pika.IncomingMessage):
         logger.error(f"💥 Error processing service message: {e}", exc_info=True)
         # Reject and requeue the message so it can be retried
         await message.nack(requeue=True)
-
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals"""
-    logger.info("🛑 Received shutdown signal")
-    shutdown_event.set()
 
 
 async def consume_products():
@@ -518,43 +511,5 @@ async def consume_services():
     logger.info("🛠️ Service consumer connection closed")
 
 
-async def main():
-    """Main function to run both consumers"""
-    logger.info("🚀 Starting RabbitMQ Consumer")
-    
-    # Set up signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # Initialize database connection pool
-    try:
-        await get_db_pool()
-        logger.info("🗄️ Database connection pool initialized")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize database connection pool: {e}", exc_info=True)
-        return
-    
-    # Create tasks for both consumers
-    logger.info("🔄 Starting consumer tasks...")
-    product_task = asyncio.create_task(consume_products())
-    service_task = asyncio.create_task(consume_services())
-    
-    logger.info("✅ Both consumers started. Press Ctrl+C to stop.")
-    
-    try:
-        # Wait for both tasks (they run indefinitely until shutdown)
-        await asyncio.gather(product_task, service_task)
-    except asyncio.CancelledError:
-        logger.info("🔄 Tasks cancelled")
-    finally:
-        logger.info("🛑 Consumer stopped")
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("🛑 Consumer stopped by user")
-    except Exception as e:
-        logger.error(f"💥 Unexpected error: {e}", exc_info=True)
-        sys.exit(1)
+# Removed the signal handler and main functions to make this module suitable for integration
+# with FastAPI lifespan management. The shutdown_event will be controlled by FastAPI.

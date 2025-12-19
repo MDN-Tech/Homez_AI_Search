@@ -29,9 +29,9 @@ sample_product = {
     "name": "Wireless Headphones",
     "barcode": "1234567890123",
     "description": "High-quality wireless headphones with noise cancellation",
-    "basePrice": 199.99,
+    "basePrice": 1999.99,
     "categoryName": "Electronics",
-    "brand": "TechBrand",
+    "brand": "TechBrandddd",
     "tags": ["wireless", "headphones", "electronics", "audio"],
     "variants": [
         {
@@ -104,8 +104,8 @@ sample_service = {
     "id": "serv_001",
     "name": "Installation Service",
     "description": "Professional installation service for electronic devices",
-    "basePrice": 49.99,
-    "categoryName": "Services",
+    "basePrice": 499.99,
+    "categoryName": "Servicesss",
     "tags": ["installation", "professional", "electronics"],
     "packages": [
         {
